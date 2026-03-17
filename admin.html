@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>License Server — Admin</title>
+  <style>
+    body{font-family:system-ui,Arial;margin:18px;color:#111}
+    .card{background:#fff;border:1px solid #ddd;padding:12px;border-radius:8px;margin-bottom:12px}
+    input,button,select{font-size:14px;padding:8px;margin-right:6px}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{border:1px solid #eee;padding:6px;text-align:left;font-size:13px}
+    th{background:#f7f7f7}
+    .muted{color:#666;font-size:13px}
+    .small{font-size:12px;color:#444}
+    .danger{background:#ff4d4d;color:#fff;border:none;padding:8px 10px;border-radius:4px;cursor:pointer}
+  </style>
+</head>
+<body>
+  <h2>License Server — Admin</h2>
+
+  <div class="card" id="loginCard">
+    <div class="small">Log in with Basic Auth (user/pass) or with Admin Key</div>
+    <div style="margin-top:8px">
+      <input id="user" placeholder="admin user" value="admin">
+      <input id="pass" placeholder="password" type="password" value="password">
+      <button id="loginBtn">Use Basic Auth</button>
+    </div>
+    <div style="margin-top:8px">
+      <input id="adminkey" placeholder="Or paste admin key" style="width:320px">
+      <button id="useKeyBtn">Use Admin Key</button>
+    </div>
+    <div id="loginMsg" class="muted" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card" id="controls" style="display:none">
+    <div><b>Generate keys</b></div>
+    <div style="margin-top:8px">
+      <input id="genCount" type="number" value="5" min="1" max="500"> 
+      <button id="genBtn">Generate</button>
+      <button id="refreshBtn">Refresh list</button>
+      <button id="deleteAllBtn" class="danger" title="Delete ALL keys">Delete All Keys</button>
+    </div>
+    <div style="margin-top:12px" id="statsBox" class="small muted"></div>
+  </div>
+
+  <div class="card" id="listCard" style="display:none">
+    <div><b>Keys</b></div>
+    <table id="keysTable">
+      <thead>
+        <tr><th>Key</th><th>ID</th><th>Active</th><th>ClientId</th><th>HW (partial)</th><th>Created</th><th>Activated</th><th>LastSeen</th><th>Actions</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+const API_BASE = ""; // same origin
+
+let authHeader = null; // either 'Basic ...' or null
+let adminKeyHeader = null;
+
+function setAuthFromUserPass(user, pass) {
+  authHeader = "Basic " + btoa(user + ":" + pass);
+  adminKeyHeader = null;
+  sessionStorage.setItem("adminAuth", authHeader);
+  sessionStorage.removeItem("adminKey");
+}
+function setAuthFromAdminKey(key) {
+  adminKeyHeader = key;
+  authHeader = null;
+  sessionStorage.setItem("adminKey", key);
+  sessionStorage.removeItem("adminAuth");
+}
+
+function loadStoredAuth() {
+  const a = sessionStorage.getItem("adminAuth");
+  const k = sessionStorage.getItem("adminKey");
+  if (a) authHeader = a;
+  if (k) adminKeyHeader = k;
+}
+
+function apiFetch(path, opts = {}) {
+  opts.headers = opts.headers || {};
+  if (adminKeyHeader) opts.headers['x-admin-key'] = adminKeyHeader;
+  else if (authHeader) opts.headers['Authorization'] = authHeader;
+  opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
+  return fetch(API_BASE + path, opts).then(r => {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json().catch(()=>{return {}});
+  });
+}
+
+document.getElementById("loginBtn").addEventListener("click", () => {
+  const user = document.getElementById("user").value.trim();
+  const pass = document.getElementById("pass").value;
+  if (!user || !pass) { document.getElementById("loginMsg").innerText = "Enter user & pass"; return; }
+  setAuthFromUserPass(user, pass);
+  // quick test call
+  apiFetch("/api/admin/stats").then(js => {
+    document.getElementById("loginMsg").innerText = "Logged in (basic)";
+    showAdmin();
+  }).catch(err => {
+    document.getElementById("loginMsg").innerText = "Auth failed";
+  });
+});
+
+document.getElementById("useKeyBtn").addEventListener("click", () => {
+  const k = document.getElementById("adminkey").value.trim();
+  if (!k) { document.getElementById("loginMsg").innerText = "Enter admin key"; return; }
+  setAuthFromAdminKey(k);
+  apiFetch("/api/admin/stats").then(js => {
+    document.getElementById("loginMsg").innerText = "Logged in (key)";
+    showAdmin();
+  }).catch(err => {
+    document.getElementById("loginMsg").innerText = "Admin key invalid";
+  });
+});
+
+function showAdmin() {
+  document.getElementById("loginCard").style.display = "none";
+  document.getElementById("controls").style.display = "block";
+  document.getElementById("listCard").style.display = "block";
+  refreshList();
+  refreshStats();
+}
+
+document.getElementById("genBtn").addEventListener("click", () => {
+  const c = parseInt(document.getElementById("genCount").value, 10) || 1;
+  apiFetch("/api/admin/generate", { method: "POST", body: JSON.stringify({ count: c }) })
+    .then(js => {
+      refreshList();
+      refreshStats();
+      alert("Generated " + (js.generated ? js.generated.length : 0) + " keys");
+    }).catch(err => alert("Generate failed: " + err));
+});
+
+document.getElementById("refreshBtn").addEventListener("click", () => {
+  refreshList(); refreshStats();
+});
+
+document.getElementById("deleteAllBtn").addEventListener("click", () => {
+  if (!confirm("Delete ALL keys? This cannot be undone.")) return;
+  apiFetch("/api/admin/delete-all", { method: "POST", body: "{}" })
+    .then(js => { refreshList(); refreshStats(); alert("All keys deleted"); })
+    .catch(err => alert("Delete all failed: " + err));
+});
+
+function refreshList() {
+  apiFetch("/api/admin/list").then(js => {
+    const rows = js.keys || [];
+    const tbody = document.querySelector("#keysTable tbody");
+    tbody.innerHTML = "";
+    rows.forEach(r => {
+      const tr = document.createElement("tr");
+      const tdKey = document.createElement("td"); tdKey.innerText = r.key;
+      const tdId = document.createElement("td"); tdId.innerText = r.id || "";
+      const tdActive = document.createElement("td"); tdActive.innerText = r.active ? "yes" : "no";
+      const tdClient = document.createElement("td"); tdClient.innerText = r.clientId || "";
+      const tdHw = document.createElement("td"); tdHw.innerText = r.hw ? (r.hw.substring(0,80)+"..") : "";
+      const tdCreated = document.createElement("td"); tdCreated.innerText = r.createdAt || "";
+      const tdActivated = document.createElement("td"); tdActivated.innerText = r.activatedAt || "";
+      const tdLast = document.createElement("td"); tdLast.innerText = r.lastSeen || "";
+      const tdActions = document.createElement("td");
+      const del = document.createElement("button");
+      del.innerText = "Delete";
+      del.style.padding = "6px";
+      del.addEventListener("click", () => {
+        if (!confirm("Delete key " + r.key + " ?")) return;
+        apiFetch("/api/admin/delete", { method: "POST", body: JSON.stringify({ id: r.id }) })
+          .then(resp => { refreshList(); refreshStats(); })
+          .catch(e => alert("Delete failed"));
+      });
+      tdActions.appendChild(del);
+
+      tr.appendChild(tdKey); tr.appendChild(tdId); tr.appendChild(tdActive);
+      tr.appendChild(tdClient); tr.appendChild(tdHw); tr.appendChild(tdCreated);
+      tr.appendChild(tdActivated); tr.appendChild(tdLast); tr.appendChild(tdActions);
+      tbody.appendChild(tr);
+    });
+  }).catch(err => { alert("Failed to load keys: " + err); });
+}
+
+function refreshStats() {
+  apiFetch("/api/admin/stats").then(js => {
+    const s = `Total: ${js.total} · Active: ${js.active} · Inactive: ${js.inactive}`;
+    document.getElementById("statsBox").innerText = s;
+  }).catch(e => { document.getElementById("statsBox").innerText = "Stats unavailable"; });
+}
+
+// Try to auto-login if stored
+loadStoredAuth();
+if (authHeader || adminKeyHeader) {
+  apiFetch("/api/admin/stats").then(js => { showAdmin(); }).catch(()=>{ /* ignore */ });
+}
+</script>
+</body>
+</html>
